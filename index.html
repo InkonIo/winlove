@@ -278,7 +278,7 @@ function boot() {
   const lock = $('#lock'), at = new Date(...CONFIG.unlock).getTime();
   const preview = location.hash === '#preview' || location.hash === '#edit';
   if (preview || Date.now() >= at) { start(); return; }
-  $('#loader').classList.add('off'); lock.classList.remove('off');
+  $('#loader').classList.add('off'); lock.classList.remove('off'); Track.send('lock');
   const set = (id, n, w) => { $('#' + id).textContent = String(n).padStart(2, '0'); $('#' + id + 'l').textContent = plural(n, w[0], w[1], w[2]); };
   const timer = setInterval(() => {
     const left = at - Date.now();
@@ -292,6 +292,35 @@ function boot() {
     set('lM', Math.floor(t % 3600 / 60), ['минута', 'минуты', 'минут']); set('lS', t % 60, ['секунда', 'секунды', 'секунд']);
   }, 250);
 }
+/* ---------- visit notifications (sent to /api/notify (Vercel Python function), which forwards to Telegram; no secrets here) ---------- */
+const Track = (() => {
+  const url = '/api/notify';
+  const enabled = /^https?:$/.test(location.protocol) && !/^(localhost|127\.|192\.168\.)/.test(location.hostname) && location.hash !== '#preview' && location.hash !== '#edit';
+  const sid = Math.random().toString(36).slice(2, 8);
+  const once = {}, viewed = new Set(), flags = {};
+  let active = 0, since = document.visibilityState === 'visible' ? Date.now() : 0, lastLeave = 0;
+  function body(type) {
+    const secs = Math.round((active + (since ? Date.now() - since : 0)) / 1000);
+    let tz = ''; try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) {}
+    return { sid, type, secs, viewed: [...viewed].sort((a, b) => a - b).map(i => i + 1), tour: !!flags.tour, finale: !!flags.finale, music: Music.on, lang: navigator.language, tz, scr: innerWidth + 'x' + innerHeight };
+  }
+  function post(type) {
+    if (!enabled) return;
+    try { const data = JSON.stringify(body(type)); if (!(navigator.sendBeacon && navigator.sendBeacon(url, new Blob([data], { type: 'text/plain' })))) fetch(url, { method: 'POST', body: data, keepalive: true }); } catch (e) {}
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      if (since) { active += Date.now() - since; since = 0; }
+      if (Date.now() - lastLeave > 20000 && (once.open || once.lock)) { lastLeave = Date.now(); post('leave'); }
+    } else since = Date.now();
+  });
+  return {
+    send(type) { if (once[type]) return; once[type] = 1; if (type === 'finale') flags.finale = 1; post(type); },
+    seen(i) { viewed.add(i); },
+    flag(k) { flags[k] = 1; }
+  };
+})();
+
 try { boot(); } catch (err) { console.error(err); $('#loader').classList.add('off'); $('#fail').style.display = 'grid'; }
 
 function start() {
@@ -644,7 +673,7 @@ function start() {
   }
   function setFocus(i) {
     if (i < 0) { focus = -1; card.classList.remove('show'); return; }
-    focus = ((i % N) + N) % N; pT = orbP(orbs[focus]); showCard(focus); finale.classList.remove('show');
+    focus = ((i % N) + N) % N; if (mode === 'free') Track.seen(focus); pT = orbP(orbs[focus]); showCard(focus); finale.classList.remove('show');
   }
   let hintTimer = 0;
   function showHint() { hint.classList.remove('off'); clearTimeout(hintTimer); hintTimer = setTimeout(() => hint.classList.add('off'), 7000); }
@@ -672,6 +701,7 @@ function start() {
   const go = $('#go');
   $('#start').classList.remove('off');
   $('#go').addEventListener('click', () => {
+    Track.send('open');
     Music.start(); syncSound();
     $('#start').classList.add('off'); soundBtn.classList.remove('off'); skip.classList.remove('off');
     intro.classList.add('on'); mode = 'intro'; introT = 0;
@@ -756,7 +786,7 @@ function start() {
       tourT += dt;
       if (tourT > HOLD) {
         tourT = 0; tourIdx++;
-        if (tourIdx < N) setFocus(tourIdx); else { setFocus(-1); card.classList.remove('tour'); pT = 1; mode = 'star'; starT = 0; }
+        if (tourIdx < N) setFocus(tourIdx); else { setFocus(-1); card.classList.remove('tour'); pT = 1; mode = 'star'; starT = 0; Track.flag('tour'); }
       }
     } else if (mode === 'star') {
       starT += dt; if (starT > 9) toFree();
@@ -844,7 +874,7 @@ function start() {
     const atTop = p > .93 && focus < 0 && (mode === 'star' || mode === 'free');
     if (p < .85) finaleDismissed = false;
     finale.classList.toggle('show', atTop && !finaleDismissed);
-    if (atTop && !finaleWas && !burstDone) { burst(); burstDone = true; }
+    if (atTop && !finaleWas && !burstDone) { burst(); burstDone = true; Track.send('finale'); }
     finaleWas = atTop; if (p < .5) burstDone = false;
     thumb.style.bottom = (p * 100) + '%'; track.setAttribute('aria-valuenow', Math.round(p * 100));
 
